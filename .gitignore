@@ -81,7 +81,7 @@ docs/_staging/
 
 # pyenv
 .python-version
-
+.venv
 # celery beat schedule file
 celerybeat-schedule
 
@@ -298,3 +298,6 @@ pytest-of-bohanhou/
 testcode/CNN/model/
 testcode/CNN/imagenet100_hf/
 testcode/LLM/model/
+testcode/LLM/log/
+testcode/LLM/gpt2-ONNX/
+testcode/LLM/wikitext2_test.txt

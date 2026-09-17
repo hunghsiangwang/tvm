@@ -1,0 +1,24 @@
+{
+  "source": "wikitext2_test.txt",
+  "source_sha256": "696cca6b65a171b0a358a4be6732cdfdf2dd6164a32e20fd70e3c13fc4dfae83",
+  "tokenizer": "gpt2-ONNX",
+  "total_raw_characters": 1294336,
+  "total_gpt2_tokens": 287644,
+  "window_length": 512,
+  "total_available_windows": 561,
+  "seed": 0,
+  "selected_indices": [
+    9,
+    22,
+    42,
+    150,
+    171,
+    284,
+    353,
+    471
+  ],
+  "number_of_windows": 8,
+  "input_tokens": 4096,
+  "scored_tokens": 4088,
+  "windows_sha256": "51829e9d00b6e0cf09804af42539ae2f7292ab5bd9a912f68ff521f543bb1ac5"
+}
