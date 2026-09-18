@@ -30,13 +30,15 @@ Configurations:
   fp32
   fp16
   int8-weights
-  posit32-es1, posit32-es2
-  posit16-es1, posit16-es2
-  posit8-es1, posit8-es2
-  posit16-es1-mixed, posit16-es2-mixed
-  posit16-es1-mixed-quire, posit16-es2-mixed-quire
-  posit8-es1-mixed, posit8-es2-mixed
-  posit8-es1-mixed-quire, posit8-es2-mixed-quire
+  posit32-es0, posit32-es1, posit32-es2
+  posit16-es0, posit16-es1, posit16-es2
+  posit8-es0, posit8-es1, posit8-es2
+  posit16-es0-quire, posit16-es1-quire, posit16-es2-quire
+  posit8-es0-quire, posit8-es1-quire, posit8-es2-quire
+  posit16-es0-mixed, posit16-es1-mixed, posit16-es2-mixed
+  posit16-es0-mixed-quire, posit16-es1-mixed-quire, posit16-es2-mixed-quire
+  posit8-es0-mixed, posit8-es1-mixed, posit8-es2-mixed
+  posit8-es0-mixed-quire, posit8-es1-mixed-quire, posit8-es2-mixed-quire
 
 Environment overrides:
   REUSE_EXISTING=true   Reuse an existing .so instead of recompiling it.
@@ -75,20 +77,31 @@ configure() {
       MODEL_PATH="./model/GPT2_wt2_int8_weights_seq512.so"
       DESCRIPTION="INT8 quantized weights; float32 VM tensors"
       ;;
-    posit32-es1|posit32-es2)
+    posit32-es0|posit32-es1|posit32-es2)
       local es="${name##*-es}"
       TARGET_DTYPE="custom[posites${es}]32"
       MODEL_PATH="./model/GPT2_wt2_posit32_es${es}_seq512.so"
       ;;
-    posit16-es1|posit16-es2|posit8-es1|posit8-es2)
+    posit16-es0|posit16-es1|posit16-es2|posit8-es0|posit8-es1|posit8-es2)
       local bits="${name#posit}"
       bits="${bits%%-*}"
       local es="${name##*-es}"
       TARGET_DTYPE="custom[posites${es}]${bits}"
       MODEL_PATH="./model/GPT2_wt2_posit${bits}_es${es}_seq512.so"
       ;;
-    posit16-es1-mixed|posit16-es2-mixed|posit16-es1-mixed-quire|posit16-es2-mixed-quire|\
-    posit8-es1-mixed|posit8-es2-mixed|posit8-es1-mixed-quire|posit8-es2-mixed-quire)
+    posit16-es0-quire|posit16-es1-quire|posit16-es2-quire|\
+    posit8-es0-quire|posit8-es1-quire|posit8-es2-quire)
+      local bits="${name#posit}"
+      bits="${bits%%-*}"
+      local es="${name#*-es}"
+      es="${es%%-*}"
+      TARGET_DTYPE="custom[posites${es}]${bits}"
+      USE_QUIRE=true
+      DESCRIPTION="pure posit${bits} es=${es} with quire accumulation"
+      MODEL_PATH="./model/GPT2_wt2_posit${bits}_es${es}_quire_seq512.so"
+      ;;
+    posit16-es0-mixed|posit16-es1-mixed|posit16-es2-mixed|posit16-es0-mixed-quire|posit16-es1-mixed-quire|posit16-es2-mixed-quire|\
+    posit8-es0-mixed|posit8-es1-mixed|posit8-es2-mixed|posit8-es0-mixed-quire|posit8-es1-mixed-quire|posit8-es2-mixed-quire)
       local bits="${name#posit}"
       bits="${bits%%-*}"
       local es="${name#*-es}"

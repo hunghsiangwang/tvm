@@ -151,10 +151,17 @@ def compile_model(args):
 
 def validate_mixed_precision(parser, args):
     if not args.use_mixed_precision:
-        if args.use_quire:
+        if not args.use_quire:
+            return
+        parsed_target = parse_custom_dtype(args.target_dtype)
+        if (
+            parsed_target is None
+            or not parsed_target[0].startswith("posites")
+            or parsed_target[1] not in (8, 16)
+        ):
             parser.error(
-                "--use-quire requires --use-mixed-precision because the existing "
-                "Quire pass supports Posit8/16 inputs accumulated to Posit32"
+                "pure-datatype --use-quire requires a custom[posites<es>]8 or "
+                "custom[posites<es>]16 target dtype"
             )
         return
     configured = {

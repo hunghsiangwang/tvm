@@ -220,9 +220,10 @@ storage_t<bits> min_value() {
   return bits_of<bits, es>(std::numeric_limits<posit_t<bits, es>>::lowest());
 }
 
-template <unsigned bits, unsigned es>
+template <unsigned bits, unsigned es, unsigned output_bits>
 void quire_matmul(storage_t<bits>* A, int64_t a_offset, int64_t K, storage_t<bits>* B,
-                  int64_t b_offset, int64_t column, int64_t N, storage_t<32>* C,
+                  int64_t b_offset, int64_t column, int64_t N,
+                  storage_t<output_bits>* C,
                   int64_t c_offset) {
   posit_t<32, es> accumulator = 0;
   for (int64_t k = 0; k < K; ++k) {
@@ -230,7 +231,7 @@ void quire_matmul(storage_t<bits>* A, int64_t a_offset, int64_t K, storage_t<bit
     posit_t<32, es> rhs = from_bits<bits, es>(B[b_offset + k * N + column]);
     accumulator += lhs * rhs;
   }
-  C[c_offset] = bits_of<32, es>(accumulator);
+  C[c_offset] = bits_of<output_bits, es>(posit_t<output_bits, es>(accumulator));
 }
 
 }  // namespace posit_generic
@@ -358,18 +359,20 @@ void quire_matmul(storage_t<bits>* A, int64_t a_offset, int64_t K, storage_t<bit
     return posit_generic::min_value<bits, Es>();                                        \
   }
 
-#define TVM_DEFINE_POSIT_QUIRE_TO_POSIT32(bits, Es)                                    \
-  TVM_DLL void Posit##bits##es##Es##QuireMatmulToPosit32(                              \
-      posit_generic::storage_t<bits>* A, int64_t a_offset, int64_t K,                   \
-      posit_generic::storage_t<bits>* B, int64_t b_offset, int64_t column, int64_t N,   \
-      posit_generic::storage_t<32>* C, int64_t c_offset) {                              \
-    posit_generic::quire_matmul<bits, Es>(A, a_offset, K, B, b_offset, column, N, C,     \
-                                          c_offset);                                    \
+#define TVM_DEFINE_POSIT_QUIRE(bits, Es, output_bits)                                  \
+  TVM_DLL void Posit##bits##es##Es##QuireMatmulToPosit##output_bits(                   \
+      posit_generic::storage_t<bits>* A, int64_t a_offset, int64_t K,                  \
+      posit_generic::storage_t<bits>* B, int64_t b_offset, int64_t column, int64_t N,  \
+      posit_generic::storage_t<output_bits>* C, int64_t c_offset) {                    \
+    posit_generic::quire_matmul<bits, Es, output_bits>(                                \
+        A, a_offset, K, B, b_offset, column, N, C, c_offset);                          \
   }
 
-#define TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(Es) \
-  TVM_DEFINE_POSIT_QUIRE_TO_POSIT32(8, Es)            \
-  TVM_DEFINE_POSIT_QUIRE_TO_POSIT32(16, Es)
+#define TVM_DEFINE_POSIT_QUIRE_FOR_ES(Es) \
+  TVM_DEFINE_POSIT_QUIRE(8, Es, 8)        \
+  TVM_DEFINE_POSIT_QUIRE(8, Es, 32)       \
+  TVM_DEFINE_POSIT_QUIRE(16, Es, 16)      \
+  TVM_DEFINE_POSIT_QUIRE(16, Es, 32)
 
 extern "C" {
 
@@ -379,16 +382,16 @@ TVM_POSIT_BITS_4_64(TVM_DEFINE_POSIT_WRAPPERS, 2)
 TVM_POSIT_BITS_4_64(TVM_DEFINE_POSIT_WRAPPERS, 3)
 TVM_POSIT_BITS_4_64(TVM_DEFINE_POSIT_WRAPPERS, 4)
 TVM_POSIT_BITS_4_64(TVM_DEFINE_POSIT_WRAPPERS, 5)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(0)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(1)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(2)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(3)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(4)
-TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES(5)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(0)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(1)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(2)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(3)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(4)
+TVM_DEFINE_POSIT_QUIRE_FOR_ES(5)
 
 }  // extern "C"
 
-#undef TVM_DEFINE_POSIT_QUIRE_TO_POSIT32_FOR_ES
-#undef TVM_DEFINE_POSIT_QUIRE_TO_POSIT32
+#undef TVM_DEFINE_POSIT_QUIRE_FOR_ES
+#undef TVM_DEFINE_POSIT_QUIRE
 #undef TVM_DEFINE_POSIT_WRAPPERS
 #undef TVM_POSIT_BITS_4_64

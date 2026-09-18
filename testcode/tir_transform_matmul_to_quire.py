@@ -78,7 +78,7 @@ def get_quire_extern_symbol_from_dtype(lhs_dtype, rhs_dtype, output_dtype, with_
 
     if not with_offset:
         return None
-    if (lhs_bits, output_bits) not in ((8, 32), (16, 32)):
+    if lhs_bits not in (8, 16) or output_bits not in (lhs_bits, 32):
         return None
     return f"Posit{lhs_bits}es{lhs_es}QuireMatmulToPosit{output_bits}"
 
