@@ -39,10 +39,11 @@ This pass converts standard matmul patterns (2D, 3D, 4D) to QuireMatmul extern c
                     call_extern("Posit{bits}es{es}QuireMatmul", A_flat, offsetA, K, B_flat, offsetB, i3, N, C_flat, offsetC)
 """
 
+import re
+
 import tvm
 from tvm import tirx
 from tvm.tirx.functor import PyStmtExprMutator
-import re
 
 
 _POSIT_DTYPE_RE = re.compile(r"^custom\[posites(\d+)\](\d+)(x\d+)?$")
@@ -193,71 +194,140 @@ def transform_matmul_to_quire_elem(func: tirx.PrimFunc) -> tirx.PrimFunc:
 
             return False
 
-        def transform_2d_matmul(self, i1_loop, i0_loop, k_loop, block_realize, block):
-            """Transform 2D matmul loops to QuireMatmulElem call"""
-            # Extract dimensions from loops
-            M = i0_loop.extent
-            K = k_loop.extent
-            N = i1_loop.extent
+        @staticmethod
+        def _strip_cast(expr):
+            while isinstance(expr, tirx.Cast):
+                expr = expr.value
+            return expr
 
-            i0_var = i0_loop.loop_var
-            i1_var = i1_loop.loop_var
+        def transform_matmul(self, spatial_loops, k_loop, block_realize, block):
+            """Replace one reduction with a layout-derived quire extern call.
 
-            # Get buffers
-            C_buffer = block.writes[0].buffer
-            A_buffer = block.reads[0].buffer
-            B_buffer = block.reads[1].buffer
+            Loop order is not a reliable indication of tensor dimensions after
+            TIR scheduling.  Derive all flattened offsets from the actual
+            BufferLoad/BufferStore indices instead.
+            """
 
+            store = block.body
+            product = self._strip_cast(store.value.b)
+            if not isinstance(product, tirx.Mul):
+                return spatial_loops[0]
+            lhs_load = self._strip_cast(product.a)
+            rhs_load = self._strip_cast(product.b)
+            if not isinstance(lhs_load, tirx.BufferLoad) or not isinstance(
+                rhs_load, tirx.BufferLoad
+            ):
+                return spatial_loops[0]
+
+            C_buffer = store.buffer
+            lhs_buffer = lhs_load.buffer
+            rhs_buffer = rhs_load.buffer
             extern_symbol = get_quire_extern_symbol_from_dtype(
-                A_buffer.dtype, B_buffer.dtype, C_buffer.dtype, with_offset=True
+                lhs_buffer.dtype,
+                rhs_buffer.dtype,
+                C_buffer.dtype,
+                with_offset=True,
             )
             if extern_symbol is None:
-                return i1_loop
+                return spatial_loops[0]
 
-            # Create extern call
-            offset_C = i0_var * N + i1_var
-            offset_A = i0_var * K
-            offset_B = tirx.const(0, "int64")
+            block_bindings = {
+                iter_var.var: value
+                for iter_var, value in zip(block.iter_vars, block_realize.iter_values)
+            }
+
+            def bind_indices(indices):
+                return [
+                    tirx.stmt_functor.substitute(index, block_bindings)
+                    for index in indices
+                ]
+
+            lhs_indices = bind_indices(lhs_load.indices)
+            rhs_indices = bind_indices(rhs_load.indices)
+            output_indices = bind_indices(store.indices)
+            reduction_var = k_loop.loop_var
+            reduction_min = k_loop.min
+            next_reduction = reduction_min + 1
+
+            def flat_offset(buffer, indices):
+                if buffer.ty.strides:
+                    offset = buffer.ty.elem_offset
+                    for index, stride in zip(indices, buffer.ty.strides):
+                        offset = offset + index * stride
+                    return offset
+                offset = 0
+                for index, extent in zip(indices, buffer.ty.shape):
+                    offset = offset * extent + index
+                return buffer.ty.elem_offset + offset
+
+            def offset_at(buffer, indices, reduction_value):
+                bound = [
+                    tirx.stmt_functor.substitute(
+                        index, {reduction_var: reduction_value}
+                    )
+                    for index in indices
+                ]
+                return flat_offset(buffer, bound)
+
+            analyzer = tvm.arith.Analyzer()
+            lhs_base = analyzer.simplify(
+                offset_at(lhs_buffer, lhs_indices, reduction_min)
+            )
+            rhs_base = analyzer.simplify(
+                offset_at(rhs_buffer, rhs_indices, reduction_min)
+            )
+            lhs_stride = analyzer.simplify(
+                offset_at(lhs_buffer, lhs_indices, next_reduction) - lhs_base
+            )
+            rhs_stride = analyzer.simplify(
+                offset_at(rhs_buffer, rhs_indices, next_reduction) - rhs_base
+            )
+            # The C++ helper walks its first input contiguously.  Scalar
+            # multiplication is commutative, so swap operands when only the
+            # right-hand reduction dimension is contiguous.
+            if not analyzer.can_prove_equal(lhs_stride, 1):
+                if not analyzer.can_prove_equal(rhs_stride, 1):
+                    return spatial_loops[0]
+                lhs_buffer, rhs_buffer = rhs_buffer, lhs_buffer
+                lhs_base, rhs_base = rhs_base, lhs_base
+                lhs_stride, rhs_stride = rhs_stride, lhs_stride
+
+            output_offset = analyzer.simplify(flat_offset(C_buffer, output_indices))
             extern_call = tirx.Evaluate(
                 tirx.call_extern(
                     "int32",
                     extern_symbol,
-                    A_buffer.data,
-                    offset_A,
-                    K,
-                    B_buffer.data,
-                    offset_B,
-                    i1_var,
-                    N,
+                    lhs_buffer.data,
+                    lhs_base,
+                    k_loop.extent,
+                    rhs_buffer.data,
+                    rhs_base,
+                    tirx.const(0, "int64"),
+                    rhs_stride,
                     C_buffer.data,
-                    offset_C
+                    output_offset,
                 )
             )
 
-            # Create new i0 loop with extern call (no k loop)
-            new_i0_loop = tirx.For(
-                i0_loop.loop_var,
-                i0_loop.min,
-                i0_loop.extent,
-                i0_loop.kind,
-                extern_call,
-                i0_loop.thread_binding,
-                i0_loop.annotations
-            )
-
-            # Create new i1 loop
-            new_i1_loop = tirx.For(
-                i1_loop.loop_var,
-                i1_loop.min,
-                i1_loop.extent,
-                i1_loop.kind,
-                new_i0_loop,
-                i1_loop.thread_binding,
-                i1_loop.annotations
-            )
-
+            body = extern_call
+            for loop in reversed(spatial_loops):
+                body = tirx.For(
+                    loop.loop_var,
+                    loop.min,
+                    loop.extent,
+                    loop.kind,
+                    body,
+                    loop.thread_binding,
+                    loop.annotations,
+                )
             self.transformed = True
-            return new_i1_loop
+            return body
+
+        def transform_2d_matmul(self, i1_loop, i0_loop, k_loop, block_realize, block):
+            """Transform 2D matmul loops to QuireMatmulElem call"""
+            return self.transform_matmul(
+                [i1_loop, i0_loop], k_loop, block_realize, block
+            )
 
         def transform_3d_matmul(self, i2_loop, i0_loop, i1_loop, k_loop, block_realize, block):
             """
@@ -267,89 +337,9 @@ def transform_matmul_to_quire_elem(func: tirx.PrimFunc) -> tirx.PrimFunc:
             Transform to:
                 for i2(N) -> for i0(batch) -> for i1(M) -> QuireMatmulElemWithOffset call
             """
-            # Extract loop variables and extents
-            i2_var = i2_loop.loop_var  # N dimension (parallel)
-            i0_var = i0_loop.loop_var  # batch dimension (unroll)
-            i1_var = i1_loop.loop_var  # M dimension
-
-            N = i2_loop.extent
-            batch = i0_loop.extent
-            M_extent = i1_loop.extent
-            K_extent = k_loop.extent
-
-            # Get buffers from block
-            C_buffer = block.writes[0].buffer
-            A_buffer = block.reads[0].buffer
-            B_buffer = block.reads[1].buffer
-
-            extern_symbol = get_quire_extern_symbol_from_dtype(
-                A_buffer.dtype, B_buffer.dtype, C_buffer.dtype, with_offset=True
+            return self.transform_matmul(
+                [i2_loop, i0_loop, i1_loop], k_loop, block_realize, block
             )
-            if extern_symbol is None:
-                return i2_loop
-
-            # Calculate offsets for flattened access
-            # C[i0, i1, i2]: flattened offset = i0 * M * N + i1 * N + i2
-            offset_C = i0_var * M_extent * N + i1_var * N + i2_var
-
-            # A[i0, i1, k]: offset to A[i0, i1, 0] = i0 * M * K + i1 * K
-            offset_A = i0_var * M_extent * K_extent + i1_var * K_extent
-
-            # B offset is 0 for 3D matmul (B is still 2D)
-            offset_B = tirx.const(0, "int64")
-
-            # Create QuireMatmulElemWithOffset extern call
-            extern_call = tirx.Evaluate(
-                tirx.call_extern(
-                    "int32",
-                    extern_symbol,
-                    A_buffer.data,
-                    offset_A,
-                    K_extent,
-                    B_buffer.data,
-                    offset_B,
-                    i2_var,
-                    N,
-                    C_buffer.data,
-                    offset_C
-                )
-            )
-
-            # Create new i1 loop (M dimension) - replace k_loop with extern call
-            new_i1_loop = tirx.For(
-                i1_loop.loop_var,
-                i1_loop.min,
-                i1_loop.extent,
-                i1_loop.kind,
-                extern_call,
-                i1_loop.thread_binding,
-                i1_loop.annotations
-            )
-
-            # Create new i0 loop (batch)
-            new_i0_loop = tirx.For(
-                i0_loop.loop_var,
-                i0_loop.min,
-                i0_loop.extent,
-                i0_loop.kind,
-                new_i1_loop,
-                i0_loop.thread_binding,
-                i0_loop.annotations
-            )
-
-            # Create new i2 loop (N)
-            new_i2_loop = tirx.For(
-                i2_loop.loop_var,
-                i2_loop.min,
-                i2_loop.extent,
-                i2_loop.kind,
-                new_i0_loop,
-                i2_loop.thread_binding,
-                i2_loop.annotations
-            )
-
-            self.transformed = True
-            return new_i2_loop
 
         def transform_4d_matmul(self, i3_loop, i1_loop, i0_loop, i2_loop, k_loop, block_realize, block):
             """
@@ -359,102 +349,12 @@ def transform_matmul_to_quire_elem(func: tirx.PrimFunc) -> tirx.PrimFunc:
             Transform to:
                 for i3(N) -> for i1(H) -> for i0(B) -> for i2(M) -> QuireMatmulElemWithOffset call
             """
-            # Extract loop variables and extents
-            i3_var = i3_loop.loop_var  # N dimension (parallel)
-            i1_var = i1_loop.loop_var  # H (heads) dimension (unroll)
-            i0_var = i0_loop.loop_var  # B (batch) dimension
-            i2_var = i2_loop.loop_var  # M dimension
-
-            N = i3_loop.extent
-            H = i1_loop.extent
-            B_extent = i0_loop.extent
-            M_extent = i2_loop.extent
-            K_extent = k_loop.extent
-
-            # Get buffers from block
-            C_buffer = block.writes[0].buffer
-            A_buffer = block.reads[0].buffer
-            B_buffer = block.reads[1].buffer
-
-            extern_symbol = get_quire_extern_symbol_from_dtype(
-                A_buffer.dtype, B_buffer.dtype, C_buffer.dtype, with_offset=True
+            return self.transform_matmul(
+                [i3_loop, i1_loop, i0_loop, i2_loop],
+                k_loop,
+                block_realize,
+                block,
             )
-            if extern_symbol is None:
-                return i3_loop
-
-            # Calculate offsets for flattened access
-            # C[i0, i1, i2, i3]: offset = i0*H*M*N + i1*M*N + i2*N + i3
-            offset_C = i0_var * H * M_extent * N + i1_var * M_extent * N + i2_var * N + i3_var
-
-            # A[i0, i1, i2, k]: offset to A[i0, i1, i2, 0] = i0*H*M*K + i1*M*K + i2*K
-            offset_A = i0_var * H * M_extent * K_extent + i1_var * M_extent * K_extent + i2_var * K_extent
-
-            # B[i0, i1, k, i3]: offset to B[i0, i1, 0, :] = i0*H*K*N + i1*K*N
-            offset_B = i0_var * H * K_extent * N + i1_var * K_extent * N
-
-            # Create QuireMatmulElemWithOffset extern call
-            extern_call = tirx.Evaluate(
-                tirx.call_extern(
-                    "int32",
-                    extern_symbol,
-                    A_buffer.data,
-                    offset_A,
-                    K_extent,
-                    B_buffer.data,
-                    offset_B,
-                    i3_var,
-                    N,
-                    C_buffer.data,
-                    offset_C
-                )
-            )
-
-            # Create new i2 loop (M dimension) - replace k_loop with extern call
-            new_i2_loop = tirx.For(
-                i2_loop.loop_var,
-                i2_loop.min,
-                i2_loop.extent,
-                i2_loop.kind,
-                extern_call,
-                i2_loop.thread_binding,
-                i2_loop.annotations
-            )
-
-            # Create new i0 loop (B/batch dimension)
-            new_i0_loop = tirx.For(
-                i0_loop.loop_var,
-                i0_loop.min,
-                i0_loop.extent,
-                i0_loop.kind,
-                new_i2_loop,
-                i0_loop.thread_binding,
-                i0_loop.annotations
-            )
-
-            # Create new i1 loop (H/heads)
-            new_i1_loop = tirx.For(
-                i1_loop.loop_var,
-                i1_loop.min,
-                i1_loop.extent,
-                i1_loop.kind,
-                new_i0_loop,
-                i1_loop.thread_binding,
-                i1_loop.annotations
-            )
-
-            # Create new i3 loop (N)
-            new_i3_loop = tirx.For(
-                i3_loop.loop_var,
-                i3_loop.min,
-                i3_loop.extent,
-                i3_loop.kind,
-                new_i1_loop,
-                i3_loop.thread_binding,
-                i3_loop.annotations
-            )
-
-            self.transformed = True
-            return new_i3_loop
 
     # Apply transformation
     transformer = MatmulTransformer()
