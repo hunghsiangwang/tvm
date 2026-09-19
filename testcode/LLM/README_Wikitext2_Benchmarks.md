@@ -64,12 +64,15 @@ activation/cache/logits contract remains float32. Select the `int8-weights`
 configuration; the driver automatically supplies the float32 VM tensor dtype
 and reports that the internal weights are INT8.
 
-Posit8/16 quire configurations are available in two distinct forms.  A name
-such as `posit8-es2-quire` keeps the complete model and matmul outputs in
-Posit8, while using the quire path only for dot-product accumulation before
-rounding back to Posit8.  A name such as `posit8-es2-mixed-quire` retains the
-existing mixed-precision policy: Posit8 matmul inputs accumulate to and return
-Posit32.  These configurations intentionally remain separate.
+Posit8/16 quire configurations are available in two distinct forms.  Both use
+`quire_mul` to accumulate unrounded products in `quire<bits, es>` and round
+only once at the end of each dot product.  A name such as
+`posit8-es2-quire` keeps the complete model and matmul outputs in Posit8, so
+the final quire value is rounded back to Posit8.  A name such as
+`posit8-es2-mixed-quire` retains Posit8 matmul inputs but converts the final
+quire value to the mixed-precision Posit32 output.  These configurations
+intentionally remain separate from each other and from non-quire Posit32
+accumulation.
 
 The `fp16` configuration similarly imports `gpt2-ONNX/onnx/model_fp16.onnx`
 without applying `ChangeDatatype`: its weights/internal graph remain FP16,

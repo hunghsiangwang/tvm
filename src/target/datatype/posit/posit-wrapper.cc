@@ -225,13 +225,16 @@ void quire_matmul(storage_t<bits>* A, int64_t a_offset, int64_t K, storage_t<bit
                   int64_t b_offset, int64_t column, int64_t N,
                   storage_t<output_bits>* C,
                   int64_t c_offset) {
-  posit_t<32, es> accumulator = 0;
+  sw::universal::quire<bits, es> accumulator;
+  accumulator.clear();
   for (int64_t k = 0; k < K; ++k) {
-    posit_t<32, es> lhs = from_bits<bits, es>(A[a_offset + k]);
-    posit_t<32, es> rhs = from_bits<bits, es>(B[b_offset + k * N + column]);
-    accumulator += lhs * rhs;
+    posit_t<bits, es> lhs = from_bits<bits, es>(A[a_offset + k]);
+    posit_t<bits, es> rhs = from_bits<bits, es>(B[b_offset + k * N + column]);
+    accumulator += sw::universal::quire_mul(lhs, rhs);
   }
-  C[c_offset] = bits_of<output_bits, es>(posit_t<output_bits, es>(accumulator));
+  posit_t<output_bits, es> result;
+  sw::universal::convert(accumulator.to_value(), result);
+  C[c_offset] = bits_of<output_bits, es>(result);
 }
 
 }  // namespace posit_generic
